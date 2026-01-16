@@ -1,6 +1,7 @@
 mod cli;
 mod deduplicator;
 mod hasher;
+mod platform;
 mod reporter;
 mod scanner;
 

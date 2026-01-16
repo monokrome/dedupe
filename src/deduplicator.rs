@@ -1,10 +1,10 @@
 use crate::hasher::FileRef;
 #[cfg(test)]
 use crate::hasher::FileIdentity;
+use crate::platform::{FileSystemOps, PlatformFileSystem};
 use crate::reporter::Reporter;
 use anyhow::{Context, Result};
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -154,7 +154,7 @@ impl Deduplicator {
             return Ok(());
         }
 
-        let canonical_dev = canonical_metadata.dev();
+        let canonical_dev = PlatformFileSystem::get_device_id(&canonical_metadata);
 
         for dup in duplicates {
             let dup_metadata = match fs::symlink_metadata(&dup.path) {
@@ -176,7 +176,7 @@ impl Deduplicator {
                 continue;
             }
 
-            let dup_dev = dup_metadata.dev();
+            let dup_dev = PlatformFileSystem::get_device_id(&dup_metadata);
 
             if canonical_dev != dup_dev {
                 reporter.log(&format!(
@@ -230,9 +230,7 @@ impl Deduplicator {
     }
 
     fn are_already_linked(&self, path1: &Path, path2: &Path) -> Result<bool> {
-        let meta1 = fs::metadata(path1)?;
-        let meta2 = fs::metadata(path2)?;
-        Ok(meta1.ino() == meta2.ino() && meta1.dev() == meta2.dev())
+        PlatformFileSystem::are_same_file(path1, path2)
     }
 
     fn create_hard_link(&self, original: &Path, duplicate: &Path) -> Result<()> {
