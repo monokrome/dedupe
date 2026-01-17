@@ -78,20 +78,30 @@ pub fn group_by_size(files: Vec<FileIdentity>) -> HashMap<u64, Vec<FileIdentity>
 pub fn refine_by_xxhash(files: Vec<FileRef>, progress: Option<&ProgressBar>) -> Result<HashMap<u64, Vec<FileRef>>> {
     let hashed_files: Vec<(u64, FileRef)> = files
         .into_par_iter()
-        .map(|file| {
-            let hash = compute_xxhash(&file.path)?;
-            let updated = Arc::new(FileIdentity {
-                path: file.path.clone(),
-                size: file.size,
-                xxhash: Some(hash),
-                blake3: file.blake3,
-            });
-            if let Some(pb) = progress {
-                pb.inc(1);
+        .filter_map(|file| {
+            match compute_xxhash(&file.path) {
+                Ok(hash) => {
+                    let updated = Arc::new(FileIdentity {
+                        path: file.path.clone(),
+                        size: file.size,
+                        xxhash: Some(hash),
+                        blake3: file.blake3,
+                    });
+                    if let Some(pb) = progress {
+                        pb.inc(1);
+                    }
+                    Some((hash, updated))
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to hash {}: {}", file.path.display(), e);
+                    if let Some(pb) = progress {
+                        pb.inc(1);
+                    }
+                    None
+                }
             }
-            Ok((hash, updated))
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect();
 
     let mut groups: HashMap<u64, Vec<FileRef>> = HashMap::new();
     for (hash, file) in hashed_files {
@@ -105,20 +115,30 @@ pub fn refine_by_xxhash(files: Vec<FileRef>, progress: Option<&ProgressBar>) -> 
 pub fn refine_by_blake3(files: Vec<FileRef>, progress: Option<&ProgressBar>) -> Result<HashMap<blake3::Hash, Vec<FileRef>>> {
     let hashed_files: Vec<(blake3::Hash, FileRef)> = files
         .into_par_iter()
-        .map(|file| {
-            let hash = compute_blake3(&file.path)?;
-            let updated = Arc::new(FileIdentity {
-                path: file.path.clone(),
-                size: file.size,
-                xxhash: file.xxhash,
-                blake3: Some(hash),
-            });
-            if let Some(pb) = progress {
-                pb.inc(1);
+        .filter_map(|file| {
+            match compute_blake3(&file.path) {
+                Ok(hash) => {
+                    let updated = Arc::new(FileIdentity {
+                        path: file.path.clone(),
+                        size: file.size,
+                        xxhash: file.xxhash,
+                        blake3: Some(hash),
+                    });
+                    if let Some(pb) = progress {
+                        pb.inc(1);
+                    }
+                    Some((hash, updated))
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to hash {}: {}", file.path.display(), e);
+                    if let Some(pb) = progress {
+                        pb.inc(1);
+                    }
+                    None
+                }
             }
-            Ok((hash, updated))
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect();
 
     let mut groups: HashMap<blake3::Hash, Vec<FileRef>> = HashMap::new();
     for (hash, file) in hashed_files {
