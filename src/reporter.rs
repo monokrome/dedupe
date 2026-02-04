@@ -65,15 +65,23 @@ impl Reporter {
         println!("Summary:");
         println!("  Files scanned: {}", self.files_scanned);
         println!("  Duplicates found: {}", self.duplicates_found);
-        println!("  Space {} saved: {}",
+        println!(
+            "  Space {} saved: {}",
             if dry_run { "would be" } else { "" },
-            format_size(self.space_saved));
+            format_size(self.space_saved)
+        );
 
         if self.skipped_cross_filesystem > 0 {
-            println!("  Skipped (cross-filesystem): {}", self.skipped_cross_filesystem);
+            println!(
+                "  Skipped (cross-filesystem): {}",
+                self.skipped_cross_filesystem
+            );
         }
         if self.skipped_already_linked > 0 {
-            println!("  Skipped (already linked): {}", self.skipped_already_linked);
+            println!(
+                "  Skipped (already linked): {}",
+                self.skipped_already_linked
+            );
         }
 
         println!("{}", "=".repeat(50));

@@ -1,7 +1,7 @@
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output};
 use tempfile::TempDir;
 
 fn create_test_file(dir: &std::path::Path, name: &str, content: &[u8]) -> PathBuf {
@@ -18,6 +18,19 @@ fn get_binary_path() -> PathBuf {
     path
 }
 
+fn run_dedupe(args: &[&std::ffi::OsStr]) -> Output {
+    Command::new(get_binary_path())
+        .args(args)
+        .output()
+        .expect("Failed to execute command")
+}
+
+fn run_dedupe_stdout(args: &[&std::ffi::OsStr]) -> String {
+    let output = run_dedupe(args);
+    assert!(output.status.success());
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
 #[test]
 fn test_dry_run_basic() {
     let dir = TempDir::new().unwrap();
@@ -26,14 +39,7 @@ fn test_dry_run_basic() {
     create_test_file(dir.path(), "file2.txt", b"duplicate content");
     create_test_file(dir.path(), "file3.txt", b"unique content");
 
-    let output = Command::new(get_binary_path())
-        .arg(dir.path())
-        .arg("--dry-run")
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = run_dedupe_stdout(&[dir.path().as_os_str(), "--dry-run".as_ref()]);
     assert!(stdout.contains("DRY RUN"));
     assert!(stdout.contains("Duplicate groups"));
 }
@@ -51,11 +57,7 @@ fn test_hard_link_mode() {
 
     assert_ne!(meta1_before.ino(), meta2_before.ino());
 
-    let output = Command::new(get_binary_path())
-        .arg(dir.path())
-        .output()
-        .expect("Failed to execute command");
-
+    let output = run_dedupe(&[dir.path().as_os_str()]);
     assert!(output.status.success());
 
     let meta1_after = fs::metadata(&file1).unwrap();
@@ -74,16 +76,12 @@ fn test_mixed_mode_dry_run() {
     create_test_file(keep_dir.path(), "keep2.txt", b"duplicate content");
     create_test_file(delete_dir.path(), "delete1.txt", b"duplicate content");
 
-    let output = Command::new(get_binary_path())
-        .arg(keep_dir.path())
-        .arg("--delete")
-        .arg(delete_dir.path())
-        .arg("--dry-run")
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = run_dedupe_stdout(&[
+        keep_dir.path().as_os_str(),
+        "--delete".as_ref(),
+        delete_dir.path().as_os_str(),
+        "--dry-run".as_ref(),
+    ]);
     assert!(stdout.contains("Hard link (keep) + Delete"));
 }
 
@@ -95,16 +93,12 @@ fn test_delete_only_mode_dry_run() {
     create_test_file(dir1.path(), "file1.txt", b"duplicate content");
     create_test_file(dir2.path(), "file2.txt", b"duplicate content");
 
-    let output = Command::new(get_binary_path())
-        .arg("--delete")
-        .arg(dir1.path())
-        .arg(dir2.path())
-        .arg("--dry-run")
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = run_dedupe_stdout(&[
+        "--delete".as_ref(),
+        dir1.path().as_os_str(),
+        dir2.path().as_os_str(),
+        "--dry-run".as_ref(),
+    ]);
     assert!(stdout.contains("Delete-only (priority-based)"));
 }
 
@@ -114,19 +108,23 @@ fn test_min_size_filter() {
 
     create_test_file(dir.path(), "small1.txt", b"hi");
     create_test_file(dir.path(), "small2.txt", b"hi");
-    create_test_file(dir.path(), "large1.txt", b"this is a much larger file with duplicate content");
-    create_test_file(dir.path(), "large2.txt", b"this is a much larger file with duplicate content");
+    create_test_file(
+        dir.path(),
+        "large1.txt",
+        b"this is a much larger file with duplicate content",
+    );
+    create_test_file(
+        dir.path(),
+        "large2.txt",
+        b"this is a much larger file with duplicate content",
+    );
 
-    let output = Command::new(get_binary_path())
-        .arg(dir.path())
-        .arg("--min-size")
-        .arg("20")
-        .arg("--dry-run")
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = run_dedupe_stdout(&[
+        dir.path().as_os_str(),
+        "--min-size".as_ref(),
+        "20".as_ref(),
+        "--dry-run".as_ref(),
+    ]);
 
     assert!(stdout.contains("large"));
     assert!(!stdout.contains("small") || stdout.contains("larger"));
@@ -141,16 +139,12 @@ fn test_exclude_filter() {
     create_test_file(dir.path(), "exclude1.bak", b"duplicate");
     create_test_file(dir.path(), "exclude2.bak", b"duplicate");
 
-    let output = Command::new(get_binary_path())
-        .arg(dir.path())
-        .arg("--exclude")
-        .arg(".bak")
-        .arg("--dry-run")
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = run_dedupe_stdout(&[
+        dir.path().as_os_str(),
+        "--exclude".as_ref(),
+        ".bak".as_ref(),
+        "--dry-run".as_ref(),
+    ]);
 
     assert!(stdout.contains("keep"));
     assert!(!stdout.contains(".bak"));
@@ -164,13 +158,7 @@ fn test_no_duplicates() {
     create_test_file(dir.path(), "file2.txt", b"content2");
     create_test_file(dir.path(), "file3.txt", b"content3");
 
-    let output = Command::new(get_binary_path())
-        .arg(dir.path())
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = run_dedupe_stdout(&[dir.path().as_os_str()]);
     assert!(stdout.contains("No duplicates found"));
 }
 
@@ -178,12 +166,6 @@ fn test_no_duplicates() {
 fn test_empty_directory() {
     let dir = TempDir::new().unwrap();
 
-    let output = Command::new(get_binary_path())
-        .arg(dir.path())
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = run_dedupe_stdout(&[dir.path().as_os_str()]);
     assert!(stdout.contains("No duplicates found") || stdout.contains("Found 0 files"));
 }

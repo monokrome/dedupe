@@ -3,22 +3,12 @@ use anyhow::Result;
 use std::path::Path;
 use walkdir::WalkDir;
 
+#[derive(Default)]
 pub struct ScanOptions {
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     pub pattern: Option<String>,
     pub exclude: Option<String>,
-}
-
-impl Default for ScanOptions {
-    fn default() -> Self {
-        Self {
-            min_size: None,
-            max_size: None,
-            pattern: None,
-            exclude: None,
-        }
-    }
 }
 
 pub fn scan_paths(paths: &[impl AsRef<Path>], options: &ScanOptions) -> Result<Vec<FileIdentity>> {
@@ -60,7 +50,11 @@ pub fn scan_paths(paths: &[impl AsRef<Path>], options: &ScanOptions) -> Result<V
             let metadata = match entry.metadata() {
                 Ok(m) => m,
                 Err(e) => {
-                    eprintln!("Warning: Failed to read metadata for {}: {}", entry.path().display(), e);
+                    eprintln!(
+                        "Warning: Failed to read metadata for {}: {}",
+                        entry.path().display(),
+                        e
+                    );
                     continue;
                 }
             };
