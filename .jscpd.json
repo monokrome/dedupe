@@ -1,0 +1,9 @@
+{
+  "threshold": 1,
+  "reporters": ["console"],
+  "format": ["rust"],
+  "ignore": ["target/**", "Cargo.lock"],
+  "minLines": 5,
+  "minTokens": 50,
+  "absolute": true
+}
