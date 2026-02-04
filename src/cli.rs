@@ -1,6 +1,8 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+const DEFAULT_STATE_FILE: &str = ".dedupe-state.json";
+
 #[derive(Parser, Debug)]
 #[command(name = "dedupe")]
 #[command(about = "Find and deduplicate files using hard links or deletion")]
@@ -50,6 +52,14 @@ pub struct Args {
     /// Show progress bars
     #[arg(long)]
     pub progress: bool,
+
+    /// Resume from state file if it exists
+    #[arg(short, long)]
+    pub resume: bool,
+
+    /// Path to state file
+    #[arg(short, long, default_value = DEFAULT_STATE_FILE)]
+    pub state_file: PathBuf,
 }
 
 impl Args {

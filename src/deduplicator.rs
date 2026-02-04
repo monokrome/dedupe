@@ -1,6 +1,6 @@
-use crate::hasher::FileRef;
 #[cfg(test)]
 use crate::hasher::FileIdentity;
+use crate::hasher::FileRef;
 use crate::platform::{FileSystemOps, PlatformFileSystem};
 use crate::reporter::Reporter;
 use anyhow::{Context, Result};
@@ -18,21 +18,36 @@ pub enum DedupeMode {
     },
 }
 
-pub struct Deduplicator {
-    mode: DedupeMode,
+fn path_matches(file_path: &Path, dir_path: &Path) -> bool {
+    let file_canonical = fs::canonicalize(file_path).ok();
+    let dir_canonical = fs::canonicalize(dir_path).ok();
+
+    match (&file_canonical, &dir_canonical) {
+        (Some(file), Some(dir)) => file.starts_with(dir),
+        _ => file_path.starts_with(dir_path),
+    }
+}
+
+pub struct Deduplicator<'a> {
+    mode: &'a DedupeMode,
     dry_run: bool,
 }
 
-impl Deduplicator {
-    pub fn new(mode: DedupeMode, dry_run: bool) -> Self {
+impl<'a> Deduplicator<'a> {
+    pub fn new_ref(mode: &'a DedupeMode, dry_run: bool) -> Self {
         Self { mode, dry_run }
     }
 
-    pub fn deduplicate(&self, duplicates: Vec<Vec<FileRef>>, reporter: &mut Reporter) -> Result<()> {
-        match &self.mode {
-            DedupeMode::HardLinkWithDelete { keep_paths, delete_paths } => {
-                self.dedupe_hard_link_with_delete(duplicates, keep_paths, delete_paths, reporter)
-            }
+    pub fn deduplicate(
+        &self,
+        duplicates: Vec<Vec<FileRef>>,
+        reporter: &mut Reporter,
+    ) -> Result<()> {
+        match self.mode {
+            DedupeMode::HardLinkWithDelete {
+                keep_paths,
+                delete_paths,
+            } => self.dedupe_hard_link_with_delete(duplicates, keep_paths, delete_paths, reporter),
             DedupeMode::DeleteOnly { paths } => {
                 self.dedupe_delete_only(duplicates, paths, reporter)
             }
@@ -107,33 +122,16 @@ impl Deduplicator {
     fn order_by_priority(&self, files: &[FileRef], paths: &[PathBuf]) -> Vec<FileRef> {
         let mut ordered: Vec<FileRef> = files.iter().map(Arc::clone).collect();
         ordered.sort_by_key(|f| {
-            let file_canonical = fs::canonicalize(&f.path).ok();
-
             paths
                 .iter()
-                .position(|p| {
-                    let dir_canonical = fs::canonicalize(p).ok();
-                    match (&file_canonical, &dir_canonical) {
-                        (Some(file), Some(dir)) => file.starts_with(dir),
-                        _ => f.path.starts_with(p),
-                    }
-                })
+                .position(|p| path_matches(&f.path, p))
                 .unwrap_or(usize::MAX)
         });
         ordered
     }
 
     fn is_under_any_path(&self, file_path: &Path, paths: &[PathBuf]) -> bool {
-        let file_canonical = fs::canonicalize(file_path).ok();
-
-        paths.iter().any(|p| {
-            let dir_canonical = fs::canonicalize(p).ok();
-
-            match (&file_canonical, &dir_canonical) {
-                (Some(file), Some(dir)) => file.starts_with(dir),
-                _ => file_path.starts_with(p),
-            }
-        })
+        paths.iter().any(|p| path_matches(file_path, p))
     }
 
     fn hard_link_keep_files(&self, files: &[FileRef], reporter: &mut Reporter) -> Result<()> {
@@ -162,7 +160,8 @@ impl Deduplicator {
                 Err(e) => {
                     reporter.log(&format!(
                         "Warning: Failed to read metadata for {}: {}",
-                        dup.path.display(), e
+                        dup.path.display(),
+                        e
                     ));
                     continue;
                 }
@@ -188,10 +187,7 @@ impl Deduplicator {
             }
 
             if self.are_already_linked(&canonical.path, &dup.path)? {
-                reporter.log_verbose(&format!(
-                    "Already linked: {}",
-                    dup.path.display()
-                ));
+                reporter.log_verbose(&format!("Already linked: {}", dup.path.display()));
                 reporter.skipped_already_linked += 1;
                 continue;
             }
@@ -252,13 +248,11 @@ mod tests {
 
     #[test]
     fn test_partition_files() {
-        let dedup = Deduplicator::new(
-            DedupeMode::HardLinkWithDelete {
-                keep_paths: vec![],
-                delete_paths: vec![],
-            },
-            false,
-        );
+        let mode = DedupeMode::HardLinkWithDelete {
+            keep_paths: vec![],
+            delete_paths: vec![],
+        };
+        let dedup = Deduplicator::new_ref(&mode, false);
 
         let files: Vec<FileRef> = vec![
             Arc::new(FileIdentity::new(PathBuf::from("/keep/file1"), 100)),
@@ -277,10 +271,8 @@ mod tests {
 
     #[test]
     fn test_order_by_priority() {
-        let dedup = Deduplicator::new(
-            DedupeMode::DeleteOnly { paths: vec![] },
-            false,
-        );
+        let mode = DedupeMode::DeleteOnly { paths: vec![] };
+        let dedup = Deduplicator::new_ref(&mode, false);
 
         let files: Vec<FileRef> = vec![
             Arc::new(FileIdentity::new(PathBuf::from("/c/file"), 100)),
