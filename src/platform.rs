@@ -5,9 +5,6 @@ use std::path::Path;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
-#[cfg(windows)]
-use std::os::windows::fs::MetadataExt;
-
 pub trait FileSystemOps {
     fn get_device_id(metadata: &fs::Metadata) -> u64;
     fn are_same_file(path1: &Path, path2: &Path) -> Result<bool>;
@@ -34,18 +31,15 @@ pub struct WindowsFileSystem;
 
 #[cfg(windows)]
 impl FileSystemOps for WindowsFileSystem {
-    fn get_device_id(metadata: &fs::Metadata) -> u64 {
-        metadata.volume_serial_number().unwrap_or(0) as u64
+    fn get_device_id(_metadata: &fs::Metadata) -> u64 {
+        // Windows doesn't expose device ID through stable std API
+        // Return 0 to indicate unknown - cross-filesystem check will be skipped
+        0
     }
 
     fn are_same_file(path1: &Path, path2: &Path) -> Result<bool> {
-        let meta1 = fs::metadata(path1)?;
-        let meta2 = fs::metadata(path2)?;
-
-        let same_volume = meta1.volume_serial_number() == meta2.volume_serial_number();
-        let same_index = meta1.file_index() == meta2.file_index();
-
-        Ok(same_volume && same_index)
+        // Use same_file crate which handles Windows correctly via winapi
+        Ok(same_file::is_same_file(path1, path2)?)
     }
 }
 
@@ -85,6 +79,7 @@ mod tests {
         let temp_file = NamedTempFile::new().unwrap();
         let metadata = fs::metadata(temp_file.path()).unwrap();
         let device_id = PlatformFileSystem::get_device_id(&metadata);
+        // On Unix, device ID should be > 0; on Windows, we return 0
         assert!(device_id > 0 || cfg!(windows), "Device ID should be valid");
     }
 }
