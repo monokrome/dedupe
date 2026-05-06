@@ -8,6 +8,7 @@ pub struct Reporter {
     pub space_saved: u64,
     pub skipped_cross_filesystem: usize,
     pub skipped_already_linked: usize,
+    pub skipped_immutable: usize,
     multi_progress: Option<MultiProgress>,
 }
 
@@ -27,6 +28,7 @@ impl Reporter {
             space_saved: 0,
             skipped_cross_filesystem: 0,
             skipped_already_linked: 0,
+            skipped_immutable: 0,
             multi_progress,
         }
     }
@@ -82,6 +84,9 @@ impl Reporter {
                 "  Skipped (already linked): {}",
                 self.skipped_already_linked
             );
+        }
+        if self.skipped_immutable > 0 {
+            println!("  Skipped (immutable): {}", self.skipped_immutable);
         }
 
         println!("{}", "=".repeat(50));

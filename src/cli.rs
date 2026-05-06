@@ -60,6 +60,13 @@ pub struct Args {
     /// Path to state file
     #[arg(short, long, default_value = DEFAULT_STATE_FILE)]
     pub state_file: PathBuf,
+
+    /// Temporarily clear the immutable attribute on files during link/delete,
+    /// then restore it afterward. Requires CAP_LINUX_IMMUTABLE (root).
+    /// Place this flag before any path arguments — `--delete` consumes
+    /// everything after it as paths.
+    #[arg(long)]
+    pub unlock_immutable: bool,
 }
 
 impl Args {

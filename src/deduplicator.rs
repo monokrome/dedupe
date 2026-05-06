@@ -31,11 +31,26 @@ fn path_matches(file_path: &Path, dir_path: &Path) -> bool {
 pub struct Deduplicator<'a> {
     mode: &'a DedupeMode,
     dry_run: bool,
+    unlock_immutable: bool,
+}
+
+enum LinkOutcome {
+    Linked,
+    SkippedImmutable,
+}
+
+enum DeleteOutcome {
+    Deleted,
+    SkippedImmutable,
 }
 
 impl<'a> Deduplicator<'a> {
-    pub fn new_ref(mode: &'a DedupeMode, dry_run: bool) -> Self {
-        Self { mode, dry_run }
+    pub fn new_ref(mode: &'a DedupeMode, dry_run: bool, unlock_immutable: bool) -> Self {
+        Self {
+            mode,
+            dry_run,
+            unlock_immutable,
+        }
     }
 
     pub fn deduplicate(
@@ -199,7 +214,10 @@ impl<'a> Deduplicator<'a> {
             ));
 
             if !self.dry_run {
-                self.create_hard_link(&canonical.path, &dup.path)?;
+                match self.try_hard_link(&canonical.path, &dup.path, reporter)? {
+                    LinkOutcome::Linked => {}
+                    LinkOutcome::SkippedImmutable => continue,
+                }
             }
 
             reporter.duplicates_found += 1;
@@ -214,8 +232,10 @@ impl<'a> Deduplicator<'a> {
             reporter.log(&format!("Deleting {}", file.path.display()));
 
             if !self.dry_run {
-                fs::remove_file(&file.path)
-                    .with_context(|| format!("Failed to delete {}", file.path.display()))?;
+                match self.try_delete(&file.path, reporter)? {
+                    DeleteOutcome::Deleted => {}
+                    DeleteOutcome::SkippedImmutable => continue,
+                }
             }
 
             reporter.duplicates_found += 1;
@@ -223,6 +243,85 @@ impl<'a> Deduplicator<'a> {
         }
 
         Ok(())
+    }
+
+    fn try_hard_link(
+        &self,
+        canonical: &Path,
+        duplicate: &Path,
+        reporter: &mut Reporter,
+    ) -> Result<LinkOutcome> {
+        let canonical_imm = PlatformFileSystem::is_immutable(canonical).unwrap_or(false);
+        let duplicate_imm = PlatformFileSystem::is_immutable(duplicate).unwrap_or(false);
+
+        if (canonical_imm || duplicate_imm) && !self.unlock_immutable {
+            reporter.log(&format!(
+                "Warning: Skipping immutable file (use --unlock-immutable): {}",
+                duplicate.display()
+            ));
+            reporter.skipped_immutable += 1;
+            return Ok(LinkOutcome::SkippedImmutable);
+        }
+
+        if canonical_imm {
+            PlatformFileSystem::set_immutable(canonical, false).with_context(|| {
+                format!("Failed to clear immutable on {}", canonical.display())
+            })?;
+        }
+        if duplicate_imm {
+            PlatformFileSystem::set_immutable(duplicate, false).with_context(|| {
+                format!("Failed to clear immutable on {}", duplicate.display())
+            })?;
+        }
+
+        let link_result = self.create_hard_link(canonical, duplicate);
+
+        match link_result {
+            Ok(()) => {
+                if canonical_imm || duplicate_imm {
+                    PlatformFileSystem::set_immutable(canonical, true).with_context(|| {
+                        format!("Failed to restore immutable on {}", canonical.display())
+                    })?;
+                }
+                Ok(LinkOutcome::Linked)
+            }
+            Err(e) => {
+                if canonical_imm {
+                    let _ = PlatformFileSystem::set_immutable(canonical, true);
+                }
+                if duplicate_imm && duplicate.exists() {
+                    let _ = PlatformFileSystem::set_immutable(duplicate, true);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn try_delete(&self, path: &Path, reporter: &mut Reporter) -> Result<DeleteOutcome> {
+        let was_immutable = PlatformFileSystem::is_immutable(path).unwrap_or(false);
+
+        if was_immutable && !self.unlock_immutable {
+            reporter.log(&format!(
+                "Warning: Skipping immutable file (use --unlock-immutable): {}",
+                path.display()
+            ));
+            reporter.skipped_immutable += 1;
+            return Ok(DeleteOutcome::SkippedImmutable);
+        }
+
+        if was_immutable {
+            PlatformFileSystem::set_immutable(path, false)
+                .with_context(|| format!("Failed to clear immutable on {}", path.display()))?;
+        }
+
+        let result = fs::remove_file(path)
+            .with_context(|| format!("Failed to delete {}", path.display()));
+
+        if result.is_err() && was_immutable && path.exists() {
+            let _ = PlatformFileSystem::set_immutable(path, true);
+        }
+
+        result.map(|_| DeleteOutcome::Deleted)
     }
 
     fn are_already_linked(&self, path1: &Path, path2: &Path) -> Result<bool> {
@@ -252,7 +351,7 @@ mod tests {
             keep_paths: vec![],
             delete_paths: vec![],
         };
-        let dedup = Deduplicator::new_ref(&mode, false);
+        let dedup = Deduplicator::new_ref(&mode, false, false);
 
         let files: Vec<FileRef> = vec![
             Arc::new(FileIdentity::new(PathBuf::from("/keep/file1"), 100)),
@@ -272,7 +371,7 @@ mod tests {
     #[test]
     fn test_order_by_priority() {
         let mode = DedupeMode::DeleteOnly { paths: vec![] };
-        let dedup = Deduplicator::new_ref(&mode, false);
+        let dedup = Deduplicator::new_ref(&mode, false, false);
 
         let files: Vec<FileRef> = vec![
             Arc::new(FileIdentity::new(PathBuf::from("/c/file"), 100)),

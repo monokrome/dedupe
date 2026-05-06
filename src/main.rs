@@ -305,7 +305,7 @@ fn run_deduplication(
         print_dry_run_summary(&blake3_groups, mode);
     }
 
-    let deduplicator = Deduplicator::new_ref(mode, args.dry_run);
+    let deduplicator = Deduplicator::new_ref(mode, args.dry_run, args.unlock_immutable);
     deduplicator.deduplicate(blake3_groups, reporter)?;
 
     Ok(())
