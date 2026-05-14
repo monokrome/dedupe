@@ -264,14 +264,12 @@ impl<'a> Deduplicator<'a> {
         }
 
         if canonical_imm {
-            PlatformFileSystem::set_immutable(canonical, false).with_context(|| {
-                format!("Failed to clear immutable on {}", canonical.display())
-            })?;
+            PlatformFileSystem::set_immutable(canonical, false)
+                .with_context(|| format!("Failed to clear immutable on {}", canonical.display()))?;
         }
         if duplicate_imm {
-            PlatformFileSystem::set_immutable(duplicate, false).with_context(|| {
-                format!("Failed to clear immutable on {}", duplicate.display())
-            })?;
+            PlatformFileSystem::set_immutable(duplicate, false)
+                .with_context(|| format!("Failed to clear immutable on {}", duplicate.display()))?;
         }
 
         let link_result = self.create_hard_link(canonical, duplicate);
@@ -314,8 +312,8 @@ impl<'a> Deduplicator<'a> {
                 .with_context(|| format!("Failed to clear immutable on {}", path.display()))?;
         }
 
-        let result = fs::remove_file(path)
-            .with_context(|| format!("Failed to delete {}", path.display()));
+        let result =
+            fs::remove_file(path).with_context(|| format!("Failed to delete {}", path.display()));
 
         if result.is_err() && was_immutable && path.exists() {
             let _ = PlatformFileSystem::set_immutable(path, true);

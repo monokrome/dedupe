@@ -67,8 +67,7 @@ mod linux_immutable {
         }
 
         let mut new_flags_storage = new_flags;
-        let rc =
-            unsafe { ioctl(file.as_raw_fd(), FS_IOC_SETFLAGS, &mut new_flags_storage) };
+        let rc = unsafe { ioctl(file.as_raw_fd(), FS_IOC_SETFLAGS, &mut new_flags_storage) };
         if rc < 0 {
             return Err(std::io::Error::last_os_error()).with_context(|| {
                 format!(
