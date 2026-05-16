@@ -5,8 +5,12 @@ use crate::platform::{FileSystemOps, PlatformFileSystem};
 use crate::reporter::Reporter;
 use anyhow::{Context, Result};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub enum DedupeMode {
     HardLinkWithDelete {
@@ -16,6 +20,20 @@ pub enum DedupeMode {
     DeleteOnly {
         paths: Vec<PathBuf>,
     },
+}
+
+/// Builds a short temp path in the duplicate's directory. The name is fixed
+/// size (not derived from the original) so it never exceeds NAME_MAX even when
+/// the original filename is at the filesystem limit. Must stay in the same
+/// directory so the temp is on the same filesystem as the hard link target.
+fn temp_path_for(duplicate: &Path) -> PathBuf {
+    let dir = duplicate.parent().unwrap_or_else(|| Path::new("."));
+    let name = format!(
+        ".dedupe-tmp.{}.{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    dir.join(name)
 }
 
 fn path_matches(file_path: &Path, dir_path: &Path) -> bool {
@@ -214,9 +232,18 @@ impl<'a> Deduplicator<'a> {
             ));
 
             if !self.dry_run {
-                match self.try_hard_link(&canonical.path, &dup.path, reporter)? {
-                    LinkOutcome::Linked => {}
-                    LinkOutcome::SkippedImmutable => continue,
+                match self.try_hard_link(&canonical.path, &dup.path, reporter) {
+                    Ok(LinkOutcome::Linked) => {}
+                    Ok(LinkOutcome::SkippedImmutable) => continue,
+                    Err(e) => {
+                        reporter.log(&format!(
+                            "Warning: Failed to hard link {}: {:#}",
+                            dup.path.display(),
+                            e
+                        ));
+                        reporter.errors += 1;
+                        continue;
+                    }
                 }
             }
 
@@ -232,9 +259,18 @@ impl<'a> Deduplicator<'a> {
             reporter.log(&format!("Deleting {}", file.path.display()));
 
             if !self.dry_run {
-                match self.try_delete(&file.path, reporter)? {
-                    DeleteOutcome::Deleted => {}
-                    DeleteOutcome::SkippedImmutable => continue,
+                match self.try_delete(&file.path, reporter) {
+                    Ok(DeleteOutcome::Deleted) => {}
+                    Ok(DeleteOutcome::SkippedImmutable) => continue,
+                    Err(e) => {
+                        reporter.log(&format!(
+                            "Warning: Failed to delete {}: {:#}",
+                            file.path.display(),
+                            e
+                        ));
+                        reporter.errors += 1;
+                        continue;
+                    }
                 }
             }
 
@@ -327,13 +363,27 @@ impl<'a> Deduplicator<'a> {
     }
 
     fn create_hard_link(&self, original: &Path, duplicate: &Path) -> Result<()> {
-        let temp_path = duplicate.with_extension("dedupe_tmp");
+        let temp_path = temp_path_for(duplicate);
+
+        // A previous interrupted run may have left this temp behind.
+        match fs::remove_file(&temp_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("Failed to remove stale temp {}", temp_path.display())
+                })
+            }
+        }
 
         fs::hard_link(original, &temp_path)
             .with_context(|| format!("Failed to create hard link at {}", temp_path.display()))?;
 
-        fs::rename(&temp_path, duplicate)
-            .with_context(|| format!("Failed to rename temp file to {}", duplicate.display()))?;
+        if let Err(e) = fs::rename(&temp_path, duplicate) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(e)
+                .with_context(|| format!("Failed to rename temp file to {}", duplicate.display()));
+        }
 
         Ok(())
     }
@@ -388,5 +438,93 @@ mod tests {
         assert_eq!(ordered[0].path, PathBuf::from("/a/file"));
         assert_eq!(ordered[1].path, PathBuf::from("/b/file"));
         assert_eq!(ordered[2].path, PathBuf::from("/c/file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_hard_link_with_filename_at_name_max() {
+        use std::os::unix::fs::MetadataExt;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+
+        let original = dir.path().join("orig");
+        fs::write(&original, b"shared content").unwrap();
+
+        // 250-byte name: appending ".dedupe_tmp" (old behaviour) would push the
+        // component past the 255-byte NAME_MAX and fail with ENAMETOOLONG.
+        let long_name = "a".repeat(250);
+        let duplicate = dir.path().join(&long_name);
+        fs::write(&duplicate, b"shared content").unwrap();
+
+        let mode = DedupeMode::HardLinkWithDelete {
+            keep_paths: vec![],
+            delete_paths: vec![],
+        };
+        let dedup = Deduplicator::new_ref(&mode, false, false);
+
+        dedup
+            .create_hard_link(&original, &duplicate)
+            .expect("link with NAME_MAX filename should succeed");
+
+        let a = fs::metadata(&original).unwrap();
+        let b = fs::metadata(&duplicate).unwrap();
+        assert_eq!(a.ino(), b.ino(), "files should share an inode");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_failed_link_does_not_abort_remaining_groups() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+
+        let canonical_a = dir.path().join("a_canonical");
+        fs::write(&canonical_a, b"group a").unwrap();
+        let ro_dir = dir.path().join("readonly");
+        fs::create_dir(&ro_dir).unwrap();
+        let dup_a = ro_dir.join("dup_a");
+        fs::write(&dup_a, b"group a").unwrap();
+        // No write permission on the directory -> temp creation fails (EACCES).
+        fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let canonical_b = dir.path().join("b_canonical");
+        fs::write(&canonical_b, b"group b").unwrap();
+        let dup_b = dir.path().join("b_dup");
+        fs::write(&dup_b, b"group b").unwrap();
+
+        let keep = vec![dir.path().to_path_buf()];
+        let mode = DedupeMode::HardLinkWithDelete {
+            keep_paths: keep,
+            delete_paths: vec![],
+        };
+        let dedup = Deduplicator::new_ref(&mode, false, false);
+
+        let groups = vec![
+            vec![
+                Arc::new(FileIdentity::new(canonical_a.clone(), 7)),
+                Arc::new(FileIdentity::new(dup_a.clone(), 7)),
+            ],
+            vec![
+                Arc::new(FileIdentity::new(canonical_b.clone(), 7)),
+                Arc::new(FileIdentity::new(dup_b.clone(), 7)),
+            ],
+        ];
+
+        let mut reporter = Reporter::new(true, false, false);
+        let result = dedup.deduplicate(groups, &mut reporter);
+
+        // Restore perms so the TempDir can be cleaned up.
+        fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(result.is_ok(), "one bad file must not abort the run");
+        assert_eq!(reporter.errors, 1, "the failed link should be counted");
+        assert_eq!(reporter.duplicates_found, 1, "group b should still link");
+
+        use std::os::unix::fs::MetadataExt;
+        let cb = fs::metadata(&canonical_b).unwrap();
+        let db = fs::metadata(&dup_b).unwrap();
+        assert_eq!(cb.ino(), db.ino(), "group b must be linked");
     }
 }

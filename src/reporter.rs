@@ -9,6 +9,7 @@ pub struct Reporter {
     pub skipped_cross_filesystem: usize,
     pub skipped_already_linked: usize,
     pub skipped_immutable: usize,
+    pub errors: usize,
     multi_progress: Option<MultiProgress>,
 }
 
@@ -29,6 +30,7 @@ impl Reporter {
             skipped_cross_filesystem: 0,
             skipped_already_linked: 0,
             skipped_immutable: 0,
+            errors: 0,
             multi_progress,
         }
     }
@@ -87,6 +89,9 @@ impl Reporter {
         }
         if self.skipped_immutable > 0 {
             println!("  Skipped (immutable): {}", self.skipped_immutable);
+        }
+        if self.errors > 0 {
+            println!("  Errors (file skipped): {}", self.errors);
         }
 
         println!("{}", "=".repeat(50));
